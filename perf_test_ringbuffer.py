@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-
 """Performance test of the RingBuffer class."""
 
 import argparse
 import collections
 import cProfile
+import ctypes
 import functools
 import logging
 import multiprocessing
@@ -17,31 +17,29 @@ import zlib
 
 import ringbuffer
 
-
 FLAGS = argparse.ArgumentParser()
 
 FLAGS.add_argument('--debug', action='store_true')
 
-FLAGS.add_argument('--duration-seconds', action='store',
-                   type=int, required=True)
+FLAGS.add_argument(
+    '--duration-seconds', action='store', type=int, required=True)
 
 FLAGS.add_argument('--slots', action='store', type=int, required=True)
 
 FLAGS.add_argument('--slot-bytes', action='store', type=int, required=True)
 
-FLAGS.add_argument('--readers', action='store',
-                   type=int, required=True)
+FLAGS.add_argument('--readers', action='store', type=int, required=True)
 
-FLAGS.add_argument('--reader-burn-cpu-milliseconds',
-                   action='store', type=int, default=0)
+FLAGS.add_argument(
+    '--reader-burn-cpu-milliseconds', action='store', type=int, default=0)
 
-FLAGS.add_argument('--writes-per-second', action='store',
-                   type=int, required=True)
+FLAGS.add_argument(
+    '--writes-per-second', action='store', type=int, required=True)
 
-FLAGS.add_argument('--verify_writes', action='store_true',
-                   dest='verify_writes')
-FLAGS.add_argument('--no-verify_writes',
-                   action='store_false', dest='verify_writes')
+FLAGS.add_argument(
+    '--verify_writes', action='store_true', dest='verify_writes')
+FLAGS.add_argument(
+    '--no-verify_writes', action='store_false', dest='verify_writes')
 FLAGS.set_defaults(verify_writes=True)
 
 
@@ -99,6 +97,17 @@ def get_random_data(num_bytes):
     code is trying to load test.
     """
     index = random.randint(0, len(_CACHED_RANDOM_DATA) - num_bytes)
+    t = ctypes.c_byte * num_bytes
+    return t.from_buffer_copy(_CACHED_RANDOM_DATA[index:index + num_bytes])
+
+
+def get_random_data_bytes(num_bytes):
+    """Generate random input data from cached randomness.
+
+    We do this because os.urandom can be very slow and that's not what this
+    code is trying to load test.
+    """
+    index = random.randint(0, len(_CACHED_RANDOM_DATA) - num_bytes)
     return _CACHED_RANDOM_DATA[index:index + num_bytes]
 
 
@@ -108,28 +117,27 @@ def get_crc32(data):
 
 def generate_verifiable_data(num_bytes):
     random_size = num_bytes - 4
-    random_data = get_random_data(random_size)
+    random_data = get_random_data_bytes(random_size)
     crc = get_crc32(random_data)
 
     result = bytearray(num_bytes)
     result[:random_size] = random_data
     struct.pack_into('>I', result, random_size, crc)
-
-    return result
+    t = ctypes.c_byte * num_bytes
+    return t.from_buffer_copy(result)
 
 
 def verify_data(data):
     random_size = len(data) - 4
     random_data = data[:random_size]
     found_crc = get_crc32(random_data)
-    (expected_crc,) = struct.unpack_from('>I', data, random_size)
+    (expected_crc, ) = struct.unpack_from('>I', data, random_size)
 
     assert expected_crc == found_crc, 'Expected crc %r, found crc %r' % (
         expected_crc, found_crc)
 
 
 class Timing:
-
     def __init__(self, now=time.time):
         self.now = now
         self.start = None
@@ -172,7 +180,7 @@ def print_process_stats(process, flags, slots, elapsed):
         print(message)
 
 
-#@profile
+# @profile
 def writer(flags, out_ring):
     print_every = flags.writes_per_second
 
@@ -209,13 +217,12 @@ def burn_cpu(milliseconds):
         if now >= end:
             break
         for i in range(100):
-            random.random() ** 1 / 2
+            random.random()**1 / 2
 
 
-#@profile
+# @profile
 def reader(flags, in_ring, reader):
     print_every = flags.writes_per_second
-    read_duration = 1 / flags.writes_per_second
     reads = 0
 
     with Timing() as elapsed:
@@ -226,7 +233,8 @@ def reader(flags, in_ring, reader):
                 break
 
             if flags.verify_writes:
-                verify_data(data)
+                byte_data = bytearray(data[0])
+                verify_data(byte_data)
 
             if flags.reader_burn_cpu_milliseconds:
                 burn_cpu(flags.reader_burn_cpu_milliseconds)
@@ -240,9 +248,8 @@ def reader(flags, in_ring, reader):
 
 
 def get_buffer(flags):
-    return ringbuffer.RingBuffer(
-        slot_bytes=flags.slot_bytes,
-        slot_count=flags.slots)
+    t = ctypes.c_byte * flags.slot_bytes
+    return ringbuffer.RingBuffer(c_type=t, slot_count=flags.slots)
 
 
 def main():
@@ -255,17 +262,11 @@ def main():
     ring = get_buffer(flags)
     ring.new_writer()
 
-    processes = [
-        multiprocessing.Process(
-            target=writer,
-            args=(flags, ring))
-    ]
+    processes = [multiprocessing.Process(target=writer, args=(flags, ring))]
     for i in range(flags.readers):
         processes.append(
             multiprocessing.Process(
-                target=reader,
-                args=(flags, ring, ring.new_reader()))
-        )
+                target=reader, args=(flags, ring, ring.new_reader())))
 
     for process in processes:
         process.start()

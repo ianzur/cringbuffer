@@ -10,9 +10,8 @@ if the buffer is full.
 
 import ctypes
 import contextlib
-import functools
 import multiprocessing
-import struct
+from typing import Type
 
 
 class Error(Exception):
@@ -47,8 +46,11 @@ class InternalLockingError(Error):
     pass
 
 
-class Position:
+class InsufficientDataError(Error):
+    pass
 
+
+class Position:
     def __init__(self, slot_count):
         self.counter = 0
         self.slot_count = slot_count
@@ -63,7 +65,6 @@ class Position:
 
 
 class Pointer:
-
     def __init__(self, slot_count, *, start=None):
         default = start if start is not None else 0
         self.counter = multiprocessing.RawValue(ctypes.c_longlong, default)
@@ -72,12 +73,15 @@ class Pointer:
     def increment(self):
         self.counter.value += 1
 
+    def increment_by(self, n: int):
+        self.counter.value += n
+
     def get(self):
         # Avoid reallocating Position repeatedly.
         self.position.counter = self.counter.value
         return self.position
 
-    def set(self, counter):
+    def set(self, counter: int):
         self.counter.value = counter
 
 
@@ -93,15 +97,16 @@ class RingBuffer:
     will not work.
     """
 
-    def __init__(self, *, slot_bytes, slot_count):
+    def __init__(self, *, c_type: Type[ctypes._SimpleCData], slot_count: int):
         """Initializer.
 
         Args:
-            slot_bytes: The maximum size of slots in the buffer.
+            c_type: Type of the slot.
             slot_count: How many slots should be in the buffer.
         """
         self.slot_count = slot_count
-        self.array = SlotArray(slot_bytes=slot_bytes, slot_count=slot_count)
+        self.array = multiprocessing.RawArray(c_type, slot_count)
+        self.c_type = c_type
         self.lock = ReadersWriterLock()
         # Each reading process may modify its own Pointer while the read
         # lock is being held. Each reading process can also load the position
@@ -150,8 +155,8 @@ class RingBuffer:
             # This means the writer can't proceed until some readers have
             # sufficiently caught up.
             reader_position = reader.get()
-            if (reader_position.index == index and
-                    reader_position.generation < generation):
+            if (reader_position.index == index
+                    and reader_position.generation < generation):
                 return True
 
         return False
@@ -163,8 +168,7 @@ class RingBuffer:
         will be woken up to consume the newly written slot.
 
         Args:
-            data: Bytes to write in the next available slot. Must be
-                less than or equal to slot_bytes in size.
+            data: Object to write in the next available slot.
 
         Raises:
             WaitingForReaderError: If all of the slots are full and we need
@@ -185,23 +189,51 @@ class RingBuffer:
             self.array[position.index] = data
             self.writer.increment()
 
-    def _has_read_conflict(self, reader_position):
-        writer_position = self.writer.get()
-        return writer_position.counter <= reader_position.counter
-
-    def _try_read_no_lock(self, reader):
+    def _try_read_no_lock(self, reader: Pointer, length: int = 1):
         position = reader.get()
-        if self._has_read_conflict(position):
+        writer_position = self.writer.get()
+
+        if writer_position.counter <= position.counter:
             if not self.active.value:
                 raise WriterFinishedError
             else:
                 raise WaitingForWriterError
 
-        data = self.array[position.index]
-        reader.increment()
-        return data
+        max_length = writer_position.counter - position.counter
 
-    def try_read(self, reader):
+        if max_length < length:
+            raise InsufficientDataError
+
+        remaining_buffer_length = self.slot_count - position.index
+        new_array = (self.c_type * length)()
+        if position.generation == writer_position.generation or \
+                remaining_buffer_length > length:
+            # If the writer is ahead of the reader in the current buffer
+            # generation, a simple memmove can copy the array.
+            ctypes.memmove(new_array,
+                           ctypes.addressof(self.array[position.index]),
+                           ctypes.sizeof(new_array))
+        else:
+            # When the writer has a greater generation count, two memmove
+            # calls are necessary to fill the new array with data.
+            first_slice_length = remaining_buffer_length
+            second_slice_length = length - first_slice_length
+            one_item_size = int(ctypes.sizeof(new_array) / length)
+
+            ctypes.memmove(new_array,
+                           ctypes.addressof(self.array[position.index]),
+                           first_slice_length * one_item_size)
+
+            if second_slice_length > 0:
+                ctypes.memmove(
+                    ctypes.addressof(new_array[first_slice_length]),
+                    ctypes.addressof(self.array[0]),
+                    second_slice_length * one_item_size)
+
+        reader.increment_by(length)
+        return new_array
+
+    def try_read(self, reader, length: int = 1):
         """Tries to read the next slot for a reader, but will not block.
 
         Args:
@@ -220,9 +252,9 @@ class RingBuffer:
                 order to wait for new data to arrive.
         """
         with self.lock.for_read():
-            return self._try_read_no_lock(reader)
+            return self._try_read_no_lock(reader, length=length)
 
-    def blocking_read(self, reader):
+    def blocking_read(self, reader, length: int = 1):
         """Reads the next slot for a reader, blocking if it isn't filled yet.
 
         Args:
@@ -240,7 +272,7 @@ class RingBuffer:
         with self.lock.for_read():
             while True:
                 try:
-                    return self._try_read_no_lock(reader)
+                    return self._try_read_no_lock(reader, length=length)
                 except WaitingForWriterError:
                     self.lock.wait_for_write()
 
@@ -253,7 +285,7 @@ class RingBuffer:
                 reader.set(writer_position.counter)
 
             for reader in self.readers:
-                p = reader.get()
+                reader.get()
 
     def writer_done(self):
         """Called by the writer when no more data is expected to be written.
@@ -265,53 +297,6 @@ class RingBuffer:
         """
         with self.lock.for_write():
             self.active.value -= 1
-
-
-class SlotArray:
-    """Fast array of indexable buffers backed by shared memory.
-
-    Assumes locking happens elsewhere.
-    """
-
-    def __init__(self, *, slot_bytes, slot_count):
-        """Initializer.
-
-        Args:
-            slot_bytes: How big each buffer in the array should be.
-            slot_count: How many buffers should be in the array.
-        """
-        self.slot_bytes = slot_bytes
-        self.slot_count = slot_count
-        self.length_bytes = 4
-        slot_type = ctypes.c_byte * (slot_bytes + self.length_bytes)
-        self.array = multiprocessing.RawArray(slot_type, slot_count)
-
-    def __getitem__(self, i):
-        data = memoryview(self.array[i])
-        (length,) = struct.unpack_from('>I', data, 0)
-
-        start = self.length_bytes
-        # This must create a copy because we want the writer to be able to
-        # overwrite this slot as soon as the data has been retrieved by all
-        # readers. But we also want the returned bytes to be mutable so that
-        # the returned data can immediately back a ctypes record using the
-        # from_buffer() method (instead of from_buffer_copy()).
-        return bytearray(data[start:start + length])
-
-    def __setitem__(self, i, data):
-        data_view = memoryview(data).cast('@B')
-        data_size = len(data_view)
-        if data_size > self.slot_bytes:
-            raise DataTooLargeError('%d bytes too big for slot' % data_size)
-
-        # Avoid copying the input data! Do only a single copy into the slot.
-        slot_view = memoryview(self.array[i]).cast('@B')
-        struct.pack_into('>I', slot_view, 0, data_size)
-        start = self.length_bytes
-        slot_view[start:start + data_size] = data_view
-
-    def __len__(self):
-        return self.slot_count
 
 
 class ReadersWriterLock:

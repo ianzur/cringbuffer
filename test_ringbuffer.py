@@ -4,7 +4,6 @@ import ctypes
 import gc
 import logging
 import multiprocessing
-import os
 import queue
 import threading
 import time
@@ -13,40 +12,11 @@ import unittest
 import ringbuffer
 
 
-class SlotArrayTest(unittest.TestCase):
-
-    def setUp(self):
-        self.array = ringbuffer.SlotArray(slot_bytes=20, slot_count=10)
-
-    def test_read_empty(self):
-        for data in self.array:
-            self.assertEqual(b'', data)
-
-    def test_read_write(self):
-        self.array[0] = b'hello'
-        self.array[1] = b''
-        self.array[5] = b'how are'
-        self.array[9] = b'you doing today?'
-
-        self.assertEqual(b'hello', self.array[0])
-        self.assertEqual(b'', self.array[1])
-        self.assertEqual(b'how are', self.array[5])
-        self.assertEqual(b'you doing today?', self.array[9])
-
-    def test_write_too_big(self):
-        try:
-            self.array[3] = b'asdfkljasdlfkajsflkjasdfasdfkljasdf'
-            self.fail()
-        except ringbuffer.DataTooLargeError:
-            pass
-
-
 class TestException(Exception):
     pass
 
 
 class ReadersWriterLockTest(unittest.TestCase):
-
     def setUp(self):
         self.lock = ringbuffer.ReadersWriterLock()
         self.assert_unlocked()
@@ -74,8 +44,7 @@ class ReadersWriterLockTest(unittest.TestCase):
 
         result_queue = multiprocessing.Queue()
         process = multiprocessing.Process(
-            target=wrapper,
-            args=(result_queue,))
+            target=wrapper, args=(result_queue, ))
 
         self.result_queues[process] = result_queue
 
@@ -167,9 +136,6 @@ class ReadersWriterLockTest(unittest.TestCase):
     def test_reader_blocks_writer(self):
         with self.lock.for_read():
             before_write = multiprocessing.Barrier(2)
-            during_write = multiprocessing.Barrier(2)
-            after_write = multiprocessing.Barrier(2)
-            after_unlock = multiprocessing.Barrier(2)
 
             def test():
                 self.assert_readers(1)
@@ -269,6 +235,7 @@ class ReadersWriterLockTest(unittest.TestCase):
         event = multiprocessing.Event()
 
         with self.lock.for_read():
+
             def test():
                 event.set()
                 with self.lock.for_write():
@@ -290,9 +257,8 @@ class ReadersWriterLockTest(unittest.TestCase):
 
     def test_wait_for_write_without_lock(self):
         self.assert_unlocked()
-        self.assertRaises(
-            ringbuffer.InternalLockingError,
-            self.lock.wait_for_write)
+        self.assertRaises(ringbuffer.InternalLockingError,
+                          self.lock.wait_for_write)
 
     def test_unlock_readers_on_exception(self):
         try:
@@ -316,7 +282,6 @@ class ReadersWriterLockTest(unittest.TestCase):
 
 
 class Expecter:
-
     def __init__(self, ring, pointer, testcase):
         self.ring = ring
         self.pointer = pointer
@@ -328,16 +293,6 @@ class Expecter:
     def write(self, data):
         self.ring.try_write(data)
 
-    def write_memory_view(self, data):
-        view = memoryview(data)
-        self.ring.try_write(view)
-
-    def write_ctype(self, data):
-        data_type = ctypes.c_double * len(data)
-        cdata = data_type()
-        cdata[:] = data
-        self.ring.try_write(cdata)
-
     def _get_read_func(self, blocking):
         if blocking:
             return self.ring.blocking_read
@@ -347,37 +302,45 @@ class Expecter:
     def expect_read(self, expected_data, blocking=False):
         read = self._get_read_func(blocking)
         data = read(self.pointer)
-        self.testcase.assertEqual(expected_data, data, 'Data was: %r' % data)
+        item = data[0]
+        for k, v in expected_data.items():
+            value = getattr(item, k)
+            self.testcase.assertEqual(v, value, 'Data field {} was: {}'.format(
+                k, value))
+
+    def expect_multi_read(self, expected_data_list, length=1, blocking=False):
+        read = self._get_read_func(blocking)
+        data = read(self.pointer, length=length)
+        self.testcase.assertEqual(
+            len(expected_data_list), len(data), 'Data length is not correct')
+        for i, expected_data in enumerate(expected_data_list):
+            for k, v in expected_data.items():
+                value = getattr(data[i], k)
+                self.testcase.assertEqual(v, value,
+                                          'Data field {} was: {}'.format(
+                                              k, value))
 
     def expect_waiting_for_writer(self):
         # There's no blocking version of this because the WaitingForWriterError
         # is what's used to determine when to block on the condition variable.
-        self.testcase.assertRaises(
-            ringbuffer.WaitingForWriterError,
-            self.ring.try_read,
-            self.pointer)
+        self.testcase.assertRaises(ringbuffer.WaitingForWriterError,
+                                   self.ring.try_read, self.pointer)
 
     def expect_waiting_for_reader(self):
-        self.testcase.assertRaises(
-            ringbuffer.WaitingForReaderError,
-            self.ring.try_write,
-            b'should not work')
+        self.testcase.assertRaises(ringbuffer.WaitingForReaderError,
+                                   self.ring.try_write, TStruct())
 
     def writer_done(self):
         self.ring.writer_done()
 
     def expect_writer_finished(self, blocking=False):
         read = self._get_read_func(blocking)
-        self.testcase.assertRaises(
-            ringbuffer.WriterFinishedError,
-            read,
-            self.pointer)
+        self.testcase.assertRaises(ringbuffer.WriterFinishedError, read,
+                                   self.pointer)
 
     def expect_already_closed(self):
-        self.testcase.assertRaises(
-            ringbuffer.AlreadyClosedError,
-            self.ring.try_write,
-            b'should not work')
+        self.testcase.assertRaises(ringbuffer.AlreadyClosedError,
+                                   self.ring.try_write, TStruct())
 
     def force_reader_sync(self):
         self.ring.force_reader_sync()
@@ -388,7 +351,6 @@ class Expecter:
 
 
 class AsyncProxy:
-
     def __init__(self, expecter, in_queue, error_queue):
         self.expecter = expecter
         self.in_queue = in_queue
@@ -406,10 +368,10 @@ class AsyncProxy:
                 name, args, kwargs = item
                 logging.debug('Running %s(%r, %r)', name, args, kwargs)
                 try:
-                    result = getattr(self.expecter, name)(*args, **kwargs)
+                    getattr(self.expecter, name)(*args, **kwargs)
                 except Exception as e:
-                    logging.exception(
-                        'Problem running %s(*%r, **%r)', name, args, kwargs)
+                    logging.exception('Problem running %s(*%r, **%r)', name,
+                                      args, kwargs)
                     self.error_queue.put(e)
             finally:
                 self.in_queue.task_done()
@@ -418,8 +380,6 @@ class AsyncProxy:
         self.in_queue.put('done')
 
     def __getattr__(self, name):
-        func = getattr(self.expecter, name)
-
         def proxy(*args, **kwargs):
             self.expecter.testcase.assertTrue(
                 self.runner,
@@ -444,10 +404,13 @@ class AsyncProxy:
         return proxy
 
 
-class RingBufferTestBase:
+class TStruct(ctypes.Structure):
+    _fields_ = (('i', ctypes.c_int32), ('f', ctypes.c_float))
 
+
+class RingBufferTestBase:
     def setUp(self):
-        self.ring = ringbuffer.RingBuffer(slot_bytes=100, slot_count=10)
+        self.ring = ringbuffer.RingBuffer(c_type=TStruct, slot_count=10)
         self.proxies = []
         self.error_queue = self.new_queue()
 
@@ -488,10 +451,11 @@ class RingBufferTestBase:
         self.proxies.append(proxy)
         return proxy
 
-    def test_write_bytes(self):
+    def test_write_simple(self):
         writer = self.new_writer()
         self.start_proxies()
-        writer.write(b'this works')
+        o = TStruct(i=22, f=2.2)
+        writer.write(o)
 
     def test_write_string(self):
         writer = self.new_writer()
@@ -501,78 +465,19 @@ class RingBufferTestBase:
         error = self.error_queue.get()
         self.assertTrue(isinstance(error, TypeError))
 
-    def test_write_bytearray(self):
-        reader = self.new_reader()
-        writer = self.new_writer()
-        self.start_proxies()
-
-        byte_list = [124, 129, 92, 3, 97]
-        data = bytearray(byte_list)
-        writer.write(data)
-
-        expected_bytes = b'|\x81\\\x03a'
-        self.assertListEqual(list(expected_bytes), byte_list)
-        reader.expect_read(expected_bytes)
-
-    def test_write_memoryview(self):
-        reader = self.new_reader()
-        writer = self.new_writer()
-        self.start_proxies()
-
-        data = b'|\x81\\\x03a'
-        writer.write_memory_view(data)
-        reader.expect_read(data)
-
-    def test_write_ctype_array(self):
-        reader = self.new_reader()
-        writer = self.new_writer()
-        self.start_proxies()
-
-        data = [
-            0.10547615602385774,
-            0.7852261064650733,
-            0.9641224591137485,
-            0.7119325400788387,
-            0.0351822948099656,
-            0.7533559074003938,
-            0.40285734175834087,
-            0.9567564883196842,
-            0.38539673218346415,
-            0.2682555751644704,
-        ]
-        writer.write_ctype(data)
-
-        expected_bytes = (
-            b'\xe0X\xa1@|\x00\xbb?\xf3s\xe7\x7f\x92 \xe9?\xd8q\xe7W\x17\xda'
-            b'\xee?)\x19\x13\xc0&\xc8\xe6?\x00\xcd6\xebi\x03\xa2?\x1f\x0f'
-            b'\x11\xd9}\x1b\xe8?r\x8e\xf3(j\xc8\xd9?\x044r\xc8\xbf\x9d\xee?'
-            b'\xe0\xa5-\x0eW\xaa\xd8?\xbcD\x93n\x19+\xd1?')
-        reader.expect_read(expected_bytes)
-
-        data_type = ctypes.c_double * len(data)
-        expected = data_type.from_buffer_copy(expected_bytes)
-        self.assertEqual(list(expected), data)
-
     def _do_read_single_write(self, blocking):
         reader = self.new_reader()
         writer = self.new_writer()
         self.start_proxies()
 
         writer.expect_index(0)
-        writer.write(b'first write')
+        o = TStruct(i=22, f=2.2)
+        writer.write(o)
         writer.expect_index(1)
 
         reader.expect_index(0)
-        reader.expect_read(b'first write', blocking=blocking)
+        reader.expect_read({'i': 22}, blocking=blocking)
         reader.expect_index(1)
-
-    def test_read_is_bytes(self):
-        reader = self.new_reader()
-        writer = self.new_writer()
-        self.start_proxies()
-
-        writer.write(b'this works')
-        reader.expect_try_read_type(bytearray)
 
     def test_read_single_write_blocking(self):
         self._do_read_single_write(True)
@@ -586,8 +491,9 @@ class RingBufferTestBase:
         self.start_proxies()
 
         reader.expect_waiting_for_writer()
-        writer.write(b'first write')
-        reader.expect_read(b'first write', blocking=blocking)
+        o = TStruct(i=22, f=2.2)
+        writer.write(o)
+        reader.expect_read({'i': 22}, blocking=blocking)
 
     def test_read_ahead_of_writes_blocking(self):
         self._do_read_ahead_of_writes(True)
@@ -601,12 +507,13 @@ class RingBufferTestBase:
         writer = self.new_writer()
         self.start_proxies()
 
-        writer.write(b'first write')
+        o = TStruct(i=22, f=2.2)
+        writer.write(o)
 
-        r1.expect_read(b'first write', blocking=blocking)
+        r1.expect_read({'i': 22}, blocking=blocking)
         r1.expect_waiting_for_writer()
 
-        r2.expect_read(b'first write', blocking=blocking)
+        r2.expect_read({'i': 22}, blocking=blocking)
         r2.expect_waiting_for_writer()
 
     def test_two_reads_one_behind_one_ahead_blocking(self):
@@ -621,7 +528,8 @@ class RingBufferTestBase:
         self.start_proxies()
 
         for i in range(self.ring.slot_count):
-            writer.write(b'write %d' % i)
+            o = TStruct(i=i, f=2.2)
+            writer.write(o)
 
         # The writer has wrapped around and is now waiting for the reader
         # to free up a slot. They have the same index, but are different
@@ -630,14 +538,15 @@ class RingBufferTestBase:
         writer.expect_index(0)
         writer.expect_waiting_for_reader()
 
-        reader.expect_read(b'write 0')
-        writer.write(b'now it works')
+        reader.expect_read({'i': 0})
+        o = TStruct(i=1111, f=2.2)
+        writer.write(o)
 
         for i in range(1, self.ring.slot_count):
-            reader.expect_read(b'write %d' % i)
+            reader.expect_read({'i': i})
 
         reader.expect_index(0)
-        reader.expect_read(b'now it works')
+        reader.expect_read({'i': 1111})
 
     def test_write_conflict_last_slot(self):
         reader = self.new_reader()
@@ -648,9 +557,8 @@ class RingBufferTestBase:
         self.assertGreater(last_slot, 0)
 
         for i in range(last_slot):
-            data = b'write %d' % i
-            writer.write(data)
-            reader.expect_read(data)
+            writer.write(TStruct(i=i))
+            reader.expect_read({'i': i})
 
         writer.expect_index(last_slot)
         reader.expect_index(last_slot)
@@ -659,15 +567,14 @@ class RingBufferTestBase:
         # to catch up. They'll have the same index, but different generation
         # numbers.
         for i in range(self.ring.slot_count):
-            data = b'write %d' % (self.ring.slot_count + i)
-            writer.write(data)
+            writer.write(TStruct(i=self.ring.slot_count + i))
 
         reader.expect_index(last_slot)
         writer.expect_index(last_slot)
         writer.expect_waiting_for_reader()
 
-        reader.expect_read(b'write 10')
-        writer.write(b'now it works')
+        reader.expect_read({'i': self.ring.slot_count})
+        writer.write(TStruct())
         writer.expect_index(0)
         reader.expect_index(0)
 
@@ -677,10 +584,9 @@ class RingBufferTestBase:
 
         self.new_reader()  # No error because no writes happened yet.
 
-        writer.write(b'hello')
-        self.assertRaises(
-            ringbuffer.MustCreatedReadersBeforeWritingError,
-            self.new_reader)
+        writer.write(TStruct())
+        self.assertRaises(ringbuffer.MustCreatedReadersBeforeWritingError,
+                          self.new_reader)
 
     def _do_read_after_close_beginning(self, blocking):
         reader = self.new_reader()
@@ -701,11 +607,11 @@ class RingBufferTestBase:
         writer = self.new_writer()
         self.start_proxies()
 
-        writer.write(b'fill the buffer')
+        writer.write(TStruct(i=4545))
         writer.writer_done()
         writer.expect_index(1)
 
-        reader.expect_read(b'fill the buffer')
+        reader.expect_read({'i': 4545})
         reader.expect_writer_finished(blocking=blocking)
         reader.expect_index(1)
 
@@ -720,9 +626,9 @@ class RingBufferTestBase:
         writer = self.new_writer()
         self.start_proxies()
 
-        writer.write(b'fill the buffer')
+        writer.write(TStruct(i=3434))
 
-        reader.expect_read(b'fill the buffer')
+        reader.expect_read({'i': 3434})
         reader.expect_waiting_for_writer()
         reader.expect_index(1)
 
@@ -741,7 +647,7 @@ class RingBufferTestBase:
         writer = self.new_writer()
         self.start_proxies()
 
-        writer.write(b'one')
+        writer.write(TStruct())
         writer.writer_done()
         writer.expect_already_closed()
 
@@ -751,10 +657,10 @@ class RingBufferTestBase:
         r2 = self.new_reader()
         self.start_proxies()
 
-        r1.expect_read(b'write after read', blocking=True)
-        r2.expect_read(b'write after read', blocking=True)
+        r1.expect_read({'i': 11}, blocking=True)
+        r2.expect_read({'i': 11}, blocking=True)
 
-        writer.write(b'write after read')
+        writer.write(TStruct(i=11))
 
     def test_blocking_readers_wake_up_after_close(self):
         writer = self.new_writer()
@@ -773,9 +679,9 @@ class RingBufferTestBase:
         r2 = self.new_reader()
         self.start_proxies()
 
-        writer.write(b'one')
-        writer.write(b'two')
-        writer.write(b'three')
+        writer.write(TStruct(i=1))
+        writer.write(TStruct(i=2))
+        writer.write(TStruct(i=3))
 
         writer.expect_index(3)
         r1.expect_index(0)
@@ -791,26 +697,26 @@ class RingBufferTestBase:
         reader = self.new_reader()
         self.start_proxies()
 
-        w1.write(b'aaa')
+        w1.write(TStruct(i=11))
         w1.expect_index(1)
         w2.expect_index(1)
 
-        w2.write(b'bbb')
+        w2.write(TStruct(i=22))
         w1.expect_index(2)
         w2.expect_index(2)
 
-        w2.write(b'ccc')
+        w2.write(TStruct(i=33))
         w1.expect_index(3)
         w2.expect_index(3)
 
-        w1.write(b'ddd')
+        w1.write(TStruct(i=44))
         w1.expect_index(4)
         w2.expect_index(4)
 
-        reader.expect_read(b'aaa', blocking=blocking)
-        reader.expect_read(b'bbb', blocking=blocking)
-        reader.expect_read(b'ccc', blocking=blocking)
-        reader.expect_read(b'ddd', blocking=blocking)
+        reader.expect_read({'i': 11}, blocking=blocking)
+        reader.expect_read({'i': 22}, blocking=blocking)
+        reader.expect_read({'i': 33}, blocking=blocking)
+        reader.expect_read({'i': 44}, blocking=blocking)
 
     def test_multiple_writers_blocking(self):
         self._do_multiple_writers(True)
@@ -824,14 +730,14 @@ class RingBufferTestBase:
         reader = self.new_reader()
         self.start_proxies()
 
-        w1.write(b'aaa')
+        w1.write(TStruct(i=11))
         w1.writer_done()
 
-        w2.write(b'bbb')
+        w2.write(TStruct(i=22))
         w2.writer_done()
 
-        reader.expect_read(b'aaa', blocking=blocking)
-        reader.expect_read(b'bbb', blocking=blocking)
+        reader.expect_read({'i': 11}, blocking=blocking)
+        reader.expect_read({'i': 22}, blocking=blocking)
         reader.expect_writer_finished(blocking=blocking)
 
     def test_multiple_writers_close_blocking(self):
@@ -851,9 +757,51 @@ class RingBufferTestBase:
     def test_start_read_before_writer_setup_non_blocking(self):
         self._do_start_read_before_writer_setup(False)
 
+    def test_read_older_gen(self):
+        w = self.new_writer()
+        reader = self.new_reader()
+        self.start_proxies()
+
+        for i in range(0, 10):
+            w.write(TStruct(i=i))
+
+        reader.expect_multi_read(
+            [{
+                'i': 0
+            }, {
+                'i': 1
+            }, {
+                'i': 2
+            }, {
+                'i': 3
+            }, {
+                'i': 4
+            }], length=5)
+
+        for i in range(10, 15):
+            w.write(TStruct(i=i))
+
+        reader.expect_multi_read(
+            [{
+                'i': 5
+            }, {
+                'i': 6
+            }, {
+                'i': 7
+            }, {
+                'i': 8
+            }, {
+                'i': 9
+            }, {
+                'i': 10
+            }, {
+                'i': 11
+            }],
+            length=7)
+        w.writer_done()
+
 
 class ThreadingTest(RingBufferTestBase, unittest.TestCase):
-
     def new_queue(self):
         return queue.Queue()
 
@@ -865,7 +813,6 @@ class ThreadingTest(RingBufferTestBase, unittest.TestCase):
 
 
 class MultiprocessingTest(RingBufferTestBase, unittest.TestCase):
-
     def new_queue(self):
         return multiprocessing.JoinableQueue()
 
