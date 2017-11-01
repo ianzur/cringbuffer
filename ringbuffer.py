@@ -107,6 +107,7 @@ class RingBuffer:
         self.slot_count = slot_count
         self.array = multiprocessing.RawArray(c_type, slot_count)
         self.c_type = c_type
+        self.slot_size = ctypes.sizeof(self.c_type)
         self.lock = ReadersWriterLock()
         # Each reading process may modify its own Pointer while the read
         # lock is being held. Each reading process can also load the position
@@ -208,7 +209,7 @@ class RingBuffer:
         remaining_buffer_length = self.slot_count - position.index
         new_array = (self.c_type * length)()
         if position.generation == writer_position.generation or \
-                remaining_buffer_length > length:
+                remaining_buffer_length >= length:
             # If the writer is ahead of the reader in the current buffer
             # generation, a simple memmove can copy the array.
             ctypes.memmove(new_array,
@@ -219,17 +220,15 @@ class RingBuffer:
             # calls are necessary to fill the new array with data.
             first_slice_length = remaining_buffer_length
             second_slice_length = length - first_slice_length
-            one_item_size = int(ctypes.sizeof(new_array) / length)
 
             ctypes.memmove(new_array,
                            ctypes.addressof(self.array[position.index]),
-                           first_slice_length * one_item_size)
+                           first_slice_length * self.slot_size)
 
-            if second_slice_length > 0:
-                ctypes.memmove(
-                    ctypes.addressof(new_array[first_slice_length]),
-                    ctypes.addressof(self.array[0]),
-                    second_slice_length * one_item_size)
+            ctypes.memmove(
+                ctypes.addressof(new_array[first_slice_length]),
+                ctypes.addressof(self.array[0]),
+                second_slice_length * self.slot_size)
 
         reader.increment_by(length)
         return new_array
@@ -241,9 +240,7 @@ class RingBuffer:
             reader: Position previously returned by the call to new_reader().
 
         Returns:
-            bytearray containing a copy of the data from the slot. This
-            value is mutable an can be used to back ctypes objects, NumPy
-            arrays, etc.
+            ctype array of c_type objects.
 
         Raises:
             WriterFinishedError: If the RingBuffer was closed before this
