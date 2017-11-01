@@ -101,7 +101,7 @@ class RingBuffer:
         """Initializer.
 
         Args:
-            c_type: Type of the slot.
+            c_type: Ctypes type of the slot.
             slot_count: How many slots should be in the buffer.
         """
         self.slot_count = slot_count
@@ -119,7 +119,7 @@ class RingBuffer:
         self.writer = Pointer(self.slot_count)
         self.active = multiprocessing.RawValue(ctypes.c_uint, 0)
 
-    def new_reader(self):
+    def new_reader(self) -> Pointer:
         """Returns a new unique reader into the buffer.
 
         This must only be called in the parent process. It must not be
@@ -136,7 +136,7 @@ class RingBuffer:
             self.readers.append(reader)
             return reader
 
-    def new_writer(self):
+    def new_writer(self) -> None:
         """Must be called once by each writer before any reads occur.
 
         Should be paired with a single subsequent call to writer_done() to
@@ -146,7 +146,7 @@ class RingBuffer:
         with self.lock.for_write():
             self.active.value += 1
 
-    def _has_write_conflict(self, position):
+    def _has_write_conflict(self, position: Pointer) -> bool:
         index = position.index
         generation = position.generation
         for reader in self.readers:
@@ -161,7 +161,7 @@ class RingBuffer:
 
         return False
 
-    def try_write(self, data):
+    def try_write(self, data: ctypes._SimpleCData) -> None:
         """Tries to write the next slot, but will not block.
 
         Once a successful write occurs, all pending blocking_read() calls
@@ -189,7 +189,8 @@ class RingBuffer:
             self.array[position.index] = data
             self.writer.increment()
 
-    def _try_read_no_lock(self, reader: Pointer, length: int = 1):
+    def _try_read_no_lock(self, reader: Pointer,
+                          length: int = 1) -> ctypes._SimpleCData:
         position = reader.get()
         writer_position = self.writer.get()
 
