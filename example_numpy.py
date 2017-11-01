@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-
 """Simple example with numpy arrays."""
 
+import ctypes
 import multiprocessing
 
 import numpy
@@ -31,33 +31,34 @@ def reader(ring, pointer):
         try:
             data = ring.blocking_read(pointer)
         except ringbuffer.WriterFinishedError:
-            return
+            break
 
-        x = numpy.frombuffer(data)
+        x = numpy.array(data[0])
         x.shape = (25, 100)
         x[1, 1] = 1.1  # Verify it's mutable
-        m = numpy.matlib.asmatrix(x)
-        norm = numpy.linalg.norm(m)
 
     print('Reader %r is done' % pointer)
 
 
 def main():
-    ring = ringbuffer.RingBuffer(slot_bytes=50000, slot_count=100)
+    t = (ctypes.c_double * 100) * 25
+    ring = ringbuffer.RingBuffer(c_type=t, slot_count=100)
     ring.new_writer()
 
     processes = [
-        multiprocessing.Process(target=writer, args=(ring,)),
+        multiprocessing.Process(target=writer, args=(ring, )),
     ]
     for i in range(10):
-        processes.append(multiprocessing.Process(
-            target=reader, args=(ring, ring.new_reader())))
+        processes.append(
+            multiprocessing.Process(
+                target=reader, args=(ring, ring.new_reader())))
 
     for p in processes:
         p.start()
 
     for p in processes:
-        p.join(timeout=20)
+        print('join')
+        p.join(timeout=50)
         assert not p.is_alive()
         assert p.exitcode == 0
 
