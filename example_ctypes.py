@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 """Simple example with ctypes.Structures."""
 
 import ctypes
@@ -54,7 +53,7 @@ def reader(ring, pointer):
         except ringbuffer.WriterFinishedError:
             return
 
-        record = Record.from_buffer(data)
+        record = data[0]
         if record.write_number and record.write_number % 100 == 0:
             print('Reader %s saw record %d at timestamp %d with %d bytes' %
                   (id(pointer), record.write_number,
@@ -64,7 +63,7 @@ def reader(ring, pointer):
 
 
 def main():
-    ring = ringbuffer.RingBuffer(slot_bytes=50000, slot_count=10)
+    ring = ringbuffer.RingBuffer(c_type=Record, slot_count=10)
     ring.new_writer()
 
     processes = [
