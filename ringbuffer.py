@@ -206,29 +206,17 @@ class RingBuffer:
         if max_length < length:
             raise InsufficientDataError
 
-        remaining_buffer_length = self.slot_count - position.index
         new_array = (self.c_type * length)()
-        if position.generation == writer_position.generation or \
-                remaining_buffer_length >= length:
-            # If the writer is ahead of the reader in the current buffer
-            # generation, a simple memmove can copy the array.
-            ctypes.memmove(new_array,
-                           ctypes.addressof(self.array[position.index]),
-                           ctypes.sizeof(new_array))
-        else:
-            # When the writer has a greater generation count, two memmove
-            # calls are necessary to fill the new array with data.
-            first_slice_length = remaining_buffer_length
-            second_slice_length = length - first_slice_length
 
-            ctypes.memmove(new_array,
-                           ctypes.addressof(self.array[position.index]),
-                           first_slice_length * self.slot_size)
-
+        remaining = self.slot_count - position.index
+        ctypes.memmove(new_array,
+                       ctypes.addressof(self.array[position.index]),
+                       self.slot_size * min(length, remaining))
+        if length > remaining:
             ctypes.memmove(
-                ctypes.addressof(new_array[first_slice_length]),
-                ctypes.addressof(self.array[0]),
-                second_slice_length * self.slot_size)
+                ctypes.addressof(new_array[remaining]),
+                ctypes.addressof(self.array),
+                (length - remaining) * self.slot_size)
 
         reader.increment_by(length)
         return new_array
