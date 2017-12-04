@@ -241,8 +241,8 @@ class RingBuffer:
             return self._try_read_no_lock(reader, length=length)
 
     def try_read_all(self, reader: Pointer):
-        length = self.writer.counter - reader.counter
         with self.lock.for_read():
+            length = self.writer.get().counter - reader.get().counter
             return self._try_read_no_lock(reader, length=length)
 
     def blocking_read(self, reader, length: int = 1):

@@ -320,6 +320,17 @@ class Expecter:
                                           'Data field {} was: {}'.format(
                                               k, value))
 
+    def expect_read_all(self, expected_data_list):
+        data = self.ring.try_read_all(self.pointer)
+        self.testcase.assertEqual(
+            len(expected_data_list), len(data), 'Data length is not correct')
+        for i, expected_data in enumerate(expected_data_list):
+            for k, v in expected_data.items():
+                value = getattr(data[i], k)
+                self.testcase.assertEqual(v, value,
+                                          'Data field {}: was {}'.format(
+                                              k, value))
+
     def expect_waiting_for_writer(self):
         # There's no blocking version of this because the WaitingForWriterError
         # is what's used to determine when to block on the condition variable.
@@ -798,6 +809,25 @@ class RingBufferTestBase:
                 'i': 11
             }],
             length=7)
+        w.writer_done()
+
+    def test_read_all(self):
+        w = self.new_writer()
+        reader = self.new_reader()
+        self.start_proxies()
+
+        for i in range(0, 10):
+            w.write(TStruct(i=i))
+
+        expected_data = [{'i': index} for index in range(0, 10)]
+        reader.expect_read_all(expected_data)
+
+        for i in range(10, 15):
+            w.write(TStruct(i=i))
+
+        expected_data = [{'i': index} for index in range(10, 15)]
+        reader.expect_read_all(expected_data)
+
         w.writer_done()
 
 
