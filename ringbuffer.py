@@ -221,7 +221,7 @@ class RingBuffer:
         reader.increment_by(length)
         return new_array
 
-    def try_read(self, reader, length: int = 1):
+    def try_read(self, reader: Pointer, length: int = 1):
         """Tries to read the next slot for a reader, but will not block.
 
         Args:
@@ -238,6 +238,11 @@ class RingBuffer:
                 order to wait for new data to arrive.
         """
         with self.lock.for_read():
+            return self._try_read_no_lock(reader, length=length)
+
+    def try_read_all(self, reader: Pointer):
+        with self.lock.for_read():
+            length = self.writer.get().counter - reader.get().counter
             return self._try_read_no_lock(reader, length=length)
 
     def blocking_read(self, reader, length: int = 1):
