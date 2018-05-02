@@ -147,7 +147,7 @@ class RingBuffer:
         with self.lock.for_write():
             self.active.value += 1
 
-    def _has_write_conflict(self, position: Pointer) -> bool:
+    def _has_write_conflict(self, position: Position) -> bool:
         index = position.index
         generation = position.generation
         for reader in self.readers:
@@ -189,6 +189,19 @@ class RingBuffer:
 
             self.array[position.index] = data
             self.writer.increment()
+
+    def try_write_multiple(self, data: ctypes.Array) -> None:
+        with self.lock.for_write():
+            if not self.active.value:
+                raise AlreadyClosedError
+
+            for item in data:
+                position = self.writer.get()
+                if self._has_write_conflict(position):
+                    raise WaitingForReaderError
+
+                self.array[position.index] = item
+                self.writer.increment()
 
     def _try_read_no_lock(self, reader: Pointer,
                           length: int = 1) -> ctypes._SimpleCData:

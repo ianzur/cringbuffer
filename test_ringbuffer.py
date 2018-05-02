@@ -8,7 +8,6 @@ import queue
 import threading
 import time
 import unittest
-
 import ringbuffer
 
 
@@ -293,6 +292,9 @@ class Expecter:
     def write(self, data):
         self.ring.try_write(data)
 
+    def write_multiple(self, data):
+        self.ring.try_write_multiple(data)
+
     def _get_read_func(self, blocking):
         if blocking:
             return self.ring.blocking_read
@@ -364,6 +366,7 @@ class Expecter:
 class AsyncProxy:
     def __init__(self, expecter, in_queue, error_queue):
         self.expecter = expecter
+
         self.in_queue = in_queue
         self.error_queue = error_queue
         self.runner = None
