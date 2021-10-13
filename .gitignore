@@ -3,3 +3,5 @@ lib
 include
 bin
 pyvenv.cfg
+
+*env
