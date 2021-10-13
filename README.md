@@ -1,3 +1,8 @@
+CHANGES: 
+- writer does not wait for readers to read
+- reader reads n most recent items from buffer
+see: [example_ctypes_img_old.py](example_ctypes_img_old.py)
+
 A multiple writer and reader [ring buffer](https://en.wikipedia.org/wiki/Circular_buffer) that allows for high-throughput data transfer between [multiproccessing](https://docs.python.org/3/library/multiprocessing.html) Python processes using [ctypes](https://docs.python.org/3/library/ctypes.html). The goal is to make it easy to construct high-frequency data streams to support signal processing in a complex data pipeline.
 
 The [`RingBuffer`](ringbuffer.py) data structure's performance is primarily bound by the behavior of the [Lock class](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Lock), which is a Kernel semaphore under the covers. The lock is used to coordinate a readers/writer lock, meaning that lock contention dominates as the number of writes per second increases. Memory performance isn't an issue because all data is stored in an efficient RawArray using ctypes types.
