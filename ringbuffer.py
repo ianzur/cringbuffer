@@ -184,40 +184,39 @@ class RingBuffer:
                 raise AlreadyClosedError
 
             position = self.writer.get()
-            if self._has_write_conflict(position):
-                raise WaitingForReaderError
+            # if self._has_write_conflict(position):
+            #     raise WaitingForReaderError
 
             self.array[position.index] = data
             self.writer.increment()
 
-    def try_write_multiple(self, data: ctypes.Array) -> None:
-        with self.lock.for_write():
-            if not self.active.value:
-                raise AlreadyClosedError
+    # def try_write_multiple(self, data: ctypes.Array) -> None:
+    #     with self.lock.for_write():
+    #         if not self.active.value:
+    #             raise AlreadyClosedError
 
-            for item in data:
-                position = self.writer.get()
-                if self._has_write_conflict(position):
-                    raise WaitingForReaderError
+    #         for item in data:
+    #             position = self.writer.get()
+    #             if self._has_write_conflict(position):
+    #                 raise WaitingForReaderError
 
-                self.array[position.index] = item
-                self.writer.increment()
+    #             self.array[position.index] = item
+    #             self.writer.increment()
 
     def _try_read_no_lock(self, reader: Pointer,
                           length: int = 1) -> ctypes._SimpleCData:
-        position = reader.get()
+        # position = reader.get()
         writer_position = self.writer.get()
+        
+        # We want to read the last n frames, regardless if they have been previously read 
+        # using the writer's current position find my position
+        position = writer_position
+        position.counter = writer_position.counter - length
 
-        if writer_position.counter <= position.counter:
-            if not self.active.value:
-                raise WriterFinishedError
-            else:
-                raise WaitingForWriterError
-
-        max_length = writer_position.counter - position.counter
-
-        if max_length < length:
-            raise InsufficientDataError
+        # if position counter is negative then there is not enough data recorded yet
+        # wait for writer
+        if position.counter < 0:
+            raise WaitingForWriterError
 
         new_array = (self.c_type * length)()
 
