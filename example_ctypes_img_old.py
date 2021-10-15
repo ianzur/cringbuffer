@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import time
+import collections
 
 import cv2
 import numpy as np
@@ -19,7 +20,6 @@ IMG_WIDTH = 640
 IMG_HEIGHT = 480
 IMG_CHANNELS = 3
 
-
 class Frame(ctypes.Structure):
     """c struct for representing frame and timestamp"""
     _fields_ = [
@@ -27,18 +27,80 @@ class Frame(ctypes.Structure):
         ("frame", ctypes.c_ubyte * IMG_CHANNELS * IMG_WIDTH * IMG_HEIGHT)
     ]
 
+def print_cap_props(capture: cv2.VideoCapture):
+
+    props = {
+        "CAP_PROP_FRAME_WIDTH": cv2.CAP_PROP_FRAME_WIDTH,
+        "CAP_PROP_FRAME_HEIGHT": cv2.CAP_PROP_FRAME_HEIGHT,
+        "CAP_PROP_FPS": cv2.CAP_PROP_FPS,
+        "CAP_PROP_FOURCC": cv2.CAP_PROP_FOURCC,
+        "CAP_PROP_BUFFERSIZE": cv2.CAP_PROP_BUFFERSIZE,
+        "CAP_PROP_CONVERT_RGB": cv2.CAP_PROP_CONVERT_RGB,
+        "CAP_PROP_AUTO_WB": cv2.CAP_PROP_AUTO_WB,
+        "CAP_PROP_BACKEND": cv2.CAP_PROP_BACKEND,
+        "CAP_PROP_CODEC_PIXEL_FORMAT": cv2.CAP_PROP_CODEC_PIXEL_FORMAT,
+        # "CAP_PROP_HW_ACCELERATION": cv2.CAP_PROP_HW_ACCELERATION,
+        # "CAP_PROP_HW_DEVICE": cv2.CAP_PROP_HW_DEVICE,
+        # "CAP_PROP_HW_ACCELERATION_USE_OPENCL": cv2.CAP_PROP_HW_ACCELERATION_USE_OPENCL,
+    }
+
+    for key, val in props.items():
+        print(f"{key:>35} ={capture.get(val):14.2f}")
+
+class FPS:
+    def __init__(self,avarageof=50):
+        self.frametimestamps = collections.deque(maxlen=avarageof)
+    def __call__(self):
+        self.frametimestamps.append(time.time())
+        if(len(self.frametimestamps) > 1):
+            return round(len(self.frametimestamps)/(self.frametimestamps[-1]-self.frametimestamps[0]), 2)
+        else:
+            return 0.0
+
 
 def writer(ring, img_gen):
     
+    cap = cv2.VideoCapture(0)
+    # cap.set(cv2.CAP_PROP_FPS, 5)
+    # cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
+
+    print_cap_props(cap)
+
+
     i = 0
+    fps = FPS()
+
+    recording_freq = 0.060 # ~ 15 fps
+    # recording_freq = 0.030 # ~ 30 fps
+
+
+    print(recording_freq)
+
+    img = np.zeros((IMG_WIDTH, IMG_HEIGHT, IMG_CHANNELS))
 
     while True:
-        time_micros = int(time.time() * 10**6)
 
         # replace this with capture.read()
-        img = next(img_gen)
+        # img = next(img_gen)
+        time_s = time.time()
 
-        frame = Frame(time_micros, np.ctypeslib.as_ctypes(img))
+        while True:
+            ret = cap.grab()
+            if (time.time() - time_s) > recording_freq:
+                break
+
+        ret, img = cap.retrieve()
+
+        print(f"{fps()} fps")
+
+        img = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.flip(img, 1)
+
+        if not ret:
+            break
+
+        frame = Frame(int(time_s * 10e6), np.ctypeslib.as_ctypes(img))
 
         try:
             ring.try_write(frame)
@@ -49,7 +111,7 @@ def writer(ring, img_gen):
             print('Wrote %d so far' % i)
 
         i += 1
-        time.sleep(0.5)
+        cv2.waitKey(1)
 
     ring.writer_done()
     print('Writer is done')
