@@ -27,6 +27,9 @@ class Frame(ctypes.Structure):
         ("frame", ctypes.c_ubyte * IMG_CHANNELS * IMG_WIDTH * IMG_HEIGHT)
     ]
 
+def decode_fourcc(cc):
+    return "".join([chr((int(cc) >> 8 * i) & 0xFF) for i in range(4)])
+
 def print_cap_props(capture: cv2.VideoCapture):
 
     props = {
@@ -45,7 +48,10 @@ def print_cap_props(capture: cv2.VideoCapture):
     }
 
     for key, val in props.items():
-        print(f"{key:>35} ={capture.get(val):14.2f}")
+        if "FOURCC" in key:
+            print(f"{key:>35} ={decode_fourcc(capture.get(val)):>6}")
+        else:
+            print(f"{key:>35} ={capture.get(val):6.0f}")
 
 class FPS:
     def __init__(self,avarageof=50):
